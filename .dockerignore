@@ -1,0 +1,16 @@
+# .dockerignore
+# Prevents large/sensitive files from entering the Docker build context.
+# Without this, 644MB of CSV data would be sent to the daemon on every build.
+
+data/
+dataset/
+.env
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.venv/
+venv/
+locust_report*.html
+locust_report*.csv
