@@ -1,41 +1,32 @@
--- ─────────────────────────────────────────────────────────────────
--- fraud-stream · Database Initialization
---
--- This file runs automatically on first Postgres container startup
--- (mounted at /docker-entrypoint-initdb.d/).
--- It is idempotent: safe to run multiple times due to IF NOT EXISTS.
--- ─────────────────────────────────────────────────────────────────
+-- db/init.sql
+-- Runs automatically on first Postgres container start.
+-- Idempotent — safe to re-run.
 
--- ── Transactions table ────────────────────────────────────────────
--- Stores every transaction that flows through the scoring pipeline.
--- JSONB for raw_features allows flexible schema as features evolve
--- without requiring a migration — useful during active development.
-CREATE TABLE IF NOT EXISTS transactions (
+CREATE TABLE IF NOT EXISTS predictions (
     id               SERIAL PRIMARY KEY,
     transaction_id   VARCHAR(64)   NOT NULL,
-    amount           FLOAT         NOT NULL,
+    features         JSONB         NOT NULL,
     fraud_probability FLOAT        NOT NULL CHECK (fraud_probability BETWEEN 0 AND 1),
     is_fraud         BOOLEAN       NOT NULL,
-    scored_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    raw_features     JSONB                              -- full feature vector for audit/retraining
+    latency_ms       FLOAT         NOT NULL,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
--- ── Indexes ───────────────────────────────────────────────────────
--- Time-series index: dashboard queries are almost always "last N minutes"
-CREATE INDEX IF NOT EXISTS idx_transactions_scored_at
-    ON transactions (scored_at DESC);
+-- Dashboard queries are almost always "last N minutes"
+CREATE INDEX IF NOT EXISTS idx_predictions_created_at
+    ON predictions (created_at DESC);
 
--- Fraud filter index: "show me only fraud cases" is a common query
-CREATE INDEX IF NOT EXISTS idx_transactions_is_fraud
-    ON transactions (is_fraud)
-    WHERE is_fraud = TRUE;   -- partial index — only indexes TRUE rows, smaller and faster
+-- Partial index — only indexes the rare fraud=TRUE rows
+CREATE INDEX IF NOT EXISTS idx_predictions_is_fraud
+    ON predictions (is_fraud)
+    WHERE is_fraud = TRUE;
 
--- ── Seed check view (optional but useful for debugging) ───────────
--- Run: SELECT * FROM fraud_summary;
+-- Convenience view used by the Streamlit dashboard
 CREATE OR REPLACE VIEW fraud_summary AS
 SELECT
-    COUNT(*)                                          AS total_transactions,
-    SUM(is_fraud::INT)                                AS total_fraud,
-    ROUND(AVG(fraud_probability::NUMERIC) * 100, 2)  AS avg_fraud_prob_pct,
-    MAX(scored_at)                                    AS last_scored_at
-FROM transactions;
+    COUNT(*)                                             AS total_scored,
+    SUM(is_fraud::INT)                                   AS total_fraud,
+    ROUND(AVG(fraud_probability::NUMERIC) * 100, 2)     AS avg_fraud_prob_pct,
+    ROUND(AVG(latency_ms::NUMERIC), 2)                  AS avg_latency_ms,
+    MAX(created_at)                                      AS last_scored_at
+FROM predictions;
