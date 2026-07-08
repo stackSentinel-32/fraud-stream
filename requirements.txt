@@ -8,9 +8,8 @@ uvicorn[standard]==0.34.0   # [standard] includes websockets + faster event loop
 
 # ── ML ───────────────────────────────────────────────────────────
 lightgbm==4.5.0
-scikit-learn==1.5.2         # preprocessing, metrics, train/test split
-pandas==2.2.3               # <3.x for streamlit compatibility
-
+scikit-learn==1.5.2     
+pandas==2.2.3             
 # ── Database ──────────────────────────────────────────────────────
 psycopg2-binary==2.9.10     # binary build → no pg_config needed at install time
 
@@ -21,7 +20,7 @@ streamlit==1.41.0
 locust==2.32.4
 
 # ── Utilities ─────────────────────────────────────────────────────
-python-dotenv==1.0.1        # loads .env into os.environ
-numpy==1.26.4               # pinned because lightgbm has strict numpy compat
+python-dotenv==1.0.1      
+numpy==1.26.4              
 joblib==1.4.2
-scipy==1.14.1               # serialize/deserialize model artifacts
+scipy==1.14.1               
