@@ -1,0 +1,106 @@
+version: "3.8"
+
+# ─────────────────────────────────────────────────────────────────
+# fraud-stream · Docker Compose
+#
+# Three services form the backbone of the pipeline:
+#   zookeeper → kafka → postgres
+#
+# Why health checks? Docker "running" ≠ "ready to accept connections".
+# Health checks let dependent services wait until the dependency is
+# actually responsive, avoiding race-condition startup failures.
+# ─────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Zookeeper ──────────────────────────────────────────────────
+  # Kafka still requires Zookeeper for leader election and cluster
+  # metadata in the Confluent CP images we're using (KRaft mode is
+  # available but adds complexity not needed for a portfolio project).
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: fraud_zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000   # heartbeat interval in ms
+    ports:
+      - "2181:2181"
+    healthcheck:
+      # "ruok" is Zookeeper's built-in 4-letter health command → replies "imok"
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka Broker ───────────────────────────────────────────────
+  # Single broker is fine for a portfolio project — replication
+  # factor > 1 requires multiple brokers and adds operational weight
+  # without teaching anything new at this stage.
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: fraud_kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"   # host-accessible listener (used by Python scripts)
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Two listeners: one for host access, one for inter-container traffic.
+      # PLAINTEXT → reachable from your laptop at localhost:9092
+      # PLAINTEXT_INTERNAL → reachable from other containers at kafka:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+
+      # With a single broker, replication factor must be 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Auto-create topics so we don't need a separate setup step
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+      # Reduce log noise in dev
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s   # give Kafka time to connect to ZK before first check
+
+  # ── PostgreSQL ─────────────────────────────────────────────────
+  # Stores every scored transaction (fraud_probability, is_fraud, etc.)
+  # Alpine image is ~50 MB vs ~200 MB for the full image — no feature
+  # difference for our use case.
+  postgres:
+    image: postgres:16-alpine
+    container_name: fraud_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume so data survives `docker compose down`
+      - postgres_data:/var/lib/postgresql/data
+      # Init SQL runs once on first container creation
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  # Explicit named volume → data persists across `docker compose down`
+  # Use `docker compose down -v` only when you want to wipe all data
+  postgres_data:
+    driver: local

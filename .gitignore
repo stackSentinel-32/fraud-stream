@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────────
+# fraud-stream · .gitignore
+# ─────────────────────────────────────────────────────────────────
+
+# ── Data — never commit raw datasets ─────────────────────────────
+# CSVs can be hundreds of MB and may contain PII
+data/
+dataset/
+
+# ── Model artifacts — generated, not source ───────────────────────
+model/*.pkl
+model/*.json
+
+# ── Secrets — NEVER commit real credentials ───────────────────────
+.env
+
+# ── Python cache ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ──────────────────────────────────────────
+venv/
+env/
+.venv/
+ENV/
+
+# ── IDE / editor ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+.project
+.classpath
+
+# ── OS artifacts ──────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Testing / coverage ────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ── Distribution / packaging ──────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# ── Jupyter (defensive — in case notebooks are added later) ───────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Docker local overrides ────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Locust result files ───────────────────────────────────────────
+locust_report*.html
+locust_report*.csv
