@@ -17,6 +17,7 @@ from typing import Callable
 
 import joblib
 import psycopg2
+import requests
 from dotenv import load_dotenv
 from kafka import KafkaConsumer
 from kafka.errors import KafkaConnectionError
@@ -37,6 +38,8 @@ KAFKA_GROUP_ID: str = os.getenv("KAFKA_GROUP_ID", "fraud-consumer-group")
 MODEL_PATH: Path = Path(os.getenv("MODEL_PATH", "model/model.pkl"))
 FEATURE_COLUMNS_PATH: Path = Path(os.getenv("FEATURE_COLUMNS_PATH", "model/feature_columns.json"))
 
+API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
+
 _DB_DSN: str = (
     f"host={os.getenv('POSTGRES_HOST', 'localhost')} "
     f"port={os.getenv('POSTGRES_PORT', '5432')} "
@@ -53,17 +56,33 @@ _feature_columns: list[str] = json.loads(FEATURE_COLUMNS_PATH.read_text())
 # ── Prediction functions ───────────────────────────────────────────
 
 def predict_local(features: dict[str, float]) -> tuple[float, bool]:
-    """
-    Score features with the local model.pkl.
-    Swap the single line in PREDICT_FN below for the HTTP version in Piece 5.
-    """
+    """Score using local model.pkl — zero network overhead, model tied to consumer process."""
     row = [[features.get(col, 0.0) for col in _feature_columns]]
     prob = float(_model.predict_proba(row)[0][1])
     return prob, prob >= 0.5
 
 
-# One-line swap point for Piece 5 → swap to: predict_via_api
-PREDICT_FN: Callable[[dict[str, float]], tuple[float, bool]] = predict_local
+def predict_via_api(features: dict[str, float]) -> tuple[float, bool]:
+    """
+    Score via the FastAPI service over HTTP.
+    Tradeoff vs predict_local:
+      + Model version decoupled — update API without restarting consumer
+      + API independently scalable and health-checked
+      - Adds ~1–5ms network roundtrip per message
+      - Consumer fails if API is down (add retry/circuit-breaker in production)
+    """
+    resp = requests.post(
+        f"{API_BASE_URL}/predict",
+        json=features,
+        timeout=float(os.getenv("API_TIMEOUT_S", "5")),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["fraud_probability"], data["is_fraud"]
+
+
+# ── One-line swap: change predict_local → predict_via_api ─────────
+PREDICT_FN: Callable[[dict[str, float]], tuple[float, bool]] = predict_via_api
 
 
 # ── Postgres connection pool ───────────────────────────────────────
