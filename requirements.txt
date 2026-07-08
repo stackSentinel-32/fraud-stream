@@ -23,4 +23,5 @@ locust==2.32.4
 # ── Utilities ─────────────────────────────────────────────────────
 python-dotenv==1.0.1        # loads .env into os.environ
 numpy==1.26.4               # pinned because lightgbm has strict numpy compat
-joblib==1.4.2               # serialize/deserialize model artifacts
+joblib==1.4.2
+scipy==1.14.1               # serialize/deserialize model artifacts
