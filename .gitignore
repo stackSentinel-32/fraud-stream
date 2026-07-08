@@ -5,7 +5,6 @@
 # ── Data — never commit raw datasets ─────────────────────────────
 # CSVs can be hundreds of MB and may contain PII
 data/
-dataset/
 
 # ── Model artifacts — generated, not source ───────────────────────
 model/*.pkl
