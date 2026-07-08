@@ -52,6 +52,9 @@ _DB_DSN: str = (
 _model = joblib.load(MODEL_PATH)
 _feature_columns: list[str] = json.loads(FEATURE_COLUMNS_PATH.read_text())
 
+# Persistent session reuses the TCP connection — eliminates ~2s per-message handshake overhead
+_http_session = requests.Session()
+
 
 # ── Prediction functions ───────────────────────────────────────────
 
@@ -71,7 +74,7 @@ def predict_via_api(features: dict[str, float]) -> tuple[float, bool]:
       - Adds ~1–5ms network roundtrip per message
       - Consumer fails if API is down (add retry/circuit-breaker in production)
     """
-    resp = requests.post(
+    resp = _http_session.post(
         f"{API_BASE_URL}/predict",
         json=features,
         timeout=float(os.getenv("API_TIMEOUT_S", "5")),
