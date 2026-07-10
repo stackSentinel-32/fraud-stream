@@ -159,8 +159,10 @@ def run_consumer() -> None:
             KAFKA_TOPIC,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             group_id=KAFKA_GROUP_ID,
-            auto_offset_reset="earliest",
+            auto_offset_reset="latest",
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
+            max_poll_interval_ms=600_000,
+            max_poll_records=10,
         )
     except KafkaConnectionError as exc:
         logger.error("Cannot connect to Kafka: %s", exc)

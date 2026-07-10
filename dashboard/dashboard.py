@@ -31,7 +31,9 @@ REFRESH_S = int(os.getenv("DASHBOARD_REFRESH_S", "5"))
 
 @st.cache_resource
 def _get_conn() -> psycopg2.extensions.connection:
-    return psycopg2.connect(_DSN)
+    conn = psycopg2.connect(_DSN)
+    conn.autocommit = True
+    return conn
 
 
 def query(sql: str) -> pd.DataFrame:
