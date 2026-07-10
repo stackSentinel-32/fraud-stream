@@ -1,8 +1,8 @@
 data/
 
-# ── Model artifacts — generated, not source ───────────────────────
-model/*.pkl
-model/*.json
+# ── Model artifacts — committed so deployment works without retraining ──
+# model/*.pkl
+# model/*.json
 
 # ── Secrets — NEVER commit real credentials ───────────────────────
 .env
