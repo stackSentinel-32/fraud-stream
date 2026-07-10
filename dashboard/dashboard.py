@@ -47,6 +47,41 @@ def query(sql: str) -> pd.DataFrame:
 
 # ─────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="fraud-stream", layout="wide", page_icon="🛡️")
+
+# Custom CSS for a premium, minimalist, "human-friendly" aesthetic
+st.markdown("""
+<style>
+    /* Top padding reduction */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    /* Make the title look more modern */
+    h1 {
+        font-family: 'Inter', sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+    /* Polish the metric cards */
+    [data-testid="stMetricValue"] {
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+    }
+    [data-testid="stMetricLabel"] {
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        opacity: 0.8;
+    }
+    /* Clean up the divider lines */
+    hr {
+        margin-top: 3rem;
+        margin-bottom: 3rem;
+        border-color: rgba(150, 150, 150, 0.2);
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🛡️ fraud-stream · Live Monitor")
 st.caption(f"Refreshes every {REFRESH_S}s · last updated {datetime.now().strftime('%H:%M:%S')}")
 
