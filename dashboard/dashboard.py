@@ -111,11 +111,11 @@ summary = query("""
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("TPS (60 s)",           f"{tps:.2f}")
-c2.metric("LightGBM fraud (10 m)", f"{summary['fraud_pct']:.2f}%")
+c2.metric("LightGBM fraud (10 m)", f"{float(summary['fraud_pct'] or 0):.2f}%")
 c3.metric("IF anomalies (10 m)",  f"{int(summary['if_anomalies'] or 0)}")
-c4.metric("p50 latency",          f"{summary['p50']:.1f} ms")
-c5.metric("p95 latency",          f"{summary['p95']:.1f} ms")
-c6.metric("p99 latency",          f"{summary['p99']:.1f} ms")
+c4.metric("p50 latency",          f"{float(summary['p50'] or 0):.1f} ms")
+c5.metric("p95 latency",          f"{float(summary['p95'] or 0):.1f} ms")
+c6.metric("p99 latency",          f"{float(summary['p99'] or 0):.1f} ms")
 
 st.divider()
 
