@@ -2,6 +2,11 @@
 
 A production-quality, end-to-end real-time fraud detection system built as a portfolio project. Transactions stream from the PaySim dataset through Apache Kafka, scored in real time by a LightGBM classifier and an Isolation Forest anomaly detector served via FastAPI, with results persisted to PostgreSQL and visualised on a live Streamlit dashboard.
 
+> **Live Dashboard:** [http://13.49.244.196:8501](http://13.49.244.196:8501)
+> 
+> *(Note: The live Kafka data stream is paused by default to preserve AWS resources. See the GIF below for a demonstration of the real-time streaming pipeline under load).*
+
+![Dashboard Demo](https://via.placeholder.com/800x400.png?text=Replace+this+image+with+a+GIF+of+your+live+dashboard)
 ---
 
 ## Architecture
