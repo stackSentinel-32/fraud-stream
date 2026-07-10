@@ -1,8 +1,9 @@
 """
 model/train.py
 
-Trains a LightGBM binary classifier on the Credit Card Fraud dataset
-and persists the model artifact + feature schema for the API layer.
+Trains two complementary fraud detectors on the PaySim dataset:
+  1. LightGBM       — supervised, high-precision, uses fraud labels
+  2. Isolation Forest — unsupervised, catches anomalies without labels
 
 Run:
     python model/train.py
@@ -10,189 +11,101 @@ Run:
 
 import json
 import logging
-import os
-import sys
 from pathlib import Path
 
 import joblib
 import lightgbm as lgb
 import pandas as pd
-from dotenv import load_dotenv
-from sklearn.metrics import (
-    average_precision_score,
-    classification_report,
-    roc_auc_score,
-)
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import average_precision_score, classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
 
-load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s", datefmt="%H:%M:%S")
+log = logging.getLogger(__name__)
 
-logging.basicConfig(
-    level=logging.getLevelName(os.getenv("LOG_LEVEL", "INFO")),
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+DATA_PATH     = Path("data/paysim.csv")
+MODEL_PATH    = Path("model/model.pkl")
+IF_PATH       = Path("model/isolation_forest.pkl")
+FEATURES_PATH = Path("model/feature_columns.json")
 
-# ── Paths — read from .env so nothing is hardcoded ────────────────
-DATA_PATH = Path(os.getenv("DATA_PATH", "data/creditcard.csv"))
-MODEL_PATH = Path(os.getenv("MODEL_PATH", "model/model.pkl"))
-FEATURE_COLUMNS_PATH = Path(os.getenv("FEATURE_COLUMNS_PATH", "model/feature_columns.json"))
-
-LABEL_COLUMN = "Class"
-TEST_SIZE = 0.2
-RANDOM_STATE = 42
+FEATURE_COLS = [
+    "amount",
+    "oldbalanceOrg", "newbalanceOrig", "balance_delta_org",
+    "oldbalanceDest", "newbalanceDest", "balance_delta_dest",
+    "type_CASH_IN", "type_CASH_OUT", "type_DEBIT", "type_PAYMENT", "type_TRANSFER",
+]
 
 
-def load_data(path: Path) -> pd.DataFrame:
-    """
-    Load the raw creditcard CSV and do a basic schema sanity-check.
-
-    Raises FileNotFoundError with a helpful download hint rather than a
-    cryptic pandas error, so the README quick-start is self-sufficient.
-    """
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Dataset not found at '{path}'.\n"
-            "Download from kaggle.com/datasets/mlg-ulb/creditcardfraud "
-            "and place it at data/creditcard.csv"
-        )
-    df = pd.read_csv(path)
-    if LABEL_COLUMN not in df.columns:
-        raise ValueError(f"Expected label column '{LABEL_COLUMN}' not in dataset columns: {list(df.columns)}")
-    fraud_rate = df[LABEL_COLUMN].mean() * 100
-    logger.info("Loaded %d rows | fraud rate: %.4f%%", len(df), fraud_rate)
-    return df
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["balance_delta_org"]  = df["newbalanceOrig"] - df["oldbalanceOrg"]
+    df["balance_delta_dest"] = df["newbalanceDest"] - df["oldbalanceDest"]
+    type_dummies = pd.get_dummies(df["type"], prefix="type")
+    for col in [c for c in FEATURE_COLS if c.startswith("type_")]:
+        if col not in type_dummies.columns:
+            type_dummies[col] = 0
+    return pd.concat([df, type_dummies], axis=1)
 
 
-def split_features_labels(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """
-    Return (X, y), dropping Time alongside Class.
-
-    Time is wall-clock offset from the first transaction in the dataset —
-    it encodes dataset-collection order, not real-world transaction timing.
-    Keeping it lets the model learn position-in-file patterns that will
-    not generalise to a live stream where timestamps are continuous.
-    """
-    drop_cols = [col for col in [LABEL_COLUMN, "Time"] if col in df.columns]
-    return df.drop(columns=drop_cols), df[LABEL_COLUMN]
-
-
-def compute_scale_pos_weight(y: pd.Series) -> float:
-    """
-    Return count(negatives) / count(positives) for LightGBM's scale_pos_weight.
-
-    Why scale_pos_weight instead of SMOTE?
-    SMOTE generates synthetic minority samples. On 285K rows it is slow,
-    and — critically — it must run *inside* each CV fold to avoid synthetic
-    samples from the training fold leaking into the validation fold (a subtle
-    but common data-leakage bug). scale_pos_weight achieves the same effect
-    by up-weighting minority misclassifications during tree building, with
-    zero augmentation overhead and zero leakage risk.
-    """
-    n_neg = int((y == 0).sum())
-    n_pos = int((y == 1).sum())
-    weight = n_neg / n_pos
-    logger.info("scale_pos_weight = %.2f  (%d neg / %d pos)", weight, n_neg, n_pos)
-    return weight
-
-
-def train_model(
+def train_lgbm(
     X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
     y_train: pd.Series,
-    scale_pos_weight: float,
+    y_test: pd.Series,
 ) -> lgb.LGBMClassifier:
-    """
-    Fit a LightGBM classifier with imbalance-aware loss weighting.
-
-    Hyperparameters are deliberately at sensible defaults — this is a
-    reproducible baseline, not a tuned system. n_estimators=500 with
-    learning_rate=0.05 is a well-established starting point for tabular
-    fraud detection before any grid/random search.
-    """
+    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
     model = lgb.LGBMClassifier(
         n_estimators=500,
         learning_rate=0.05,
-        num_leaves=31,             # default; controls tree complexity
+        num_leaves=63,
         scale_pos_weight=scale_pos_weight,
-        random_state=RANDOM_STATE,
-        n_jobs=-1,                 # saturate all CPU cores during training
-        verbose=-1,                # silence LightGBM's own stdout output
+        random_state=42,
+        n_jobs=-1,
+        verbose=-1,
     )
-    logger.info("Training LightGBM... (this takes ~30s on a laptop)")
     model.fit(X_train, y_train)
-    logger.info("Training complete.")
+
+    probs = model.predict_proba(X_test)[:, 1]
+    log.info("LightGBM  AUC-PR : %.4f", average_precision_score(y_test, probs))
+    log.info("LightGBM  AUC-ROC: %.4f", roc_auc_score(y_test, probs))
+    log.info("\n%s", classification_report(y_test, (probs >= 0.5).astype(int), target_names=["legit", "fraud"]))
     return model
 
 
-def evaluate(
-    model: lgb.LGBMClassifier,
-    X_test: pd.DataFrame,
-    y_test: pd.Series,
-) -> None:
-    """
-    Report AUC-PR as primary metric, AUC-ROC as secondary.
-
-    Why not accuracy?
-    Predicting "not fraud" for every row gives ~99.83% accuracy on this
-    dataset while catching zero fraud cases. AUC-PR evaluates the
-    precision/recall trade-off *on the minority class only*, making it
-    the correct metric for imbalanced binary classification. AUC-ROC is
-    shown because interviewers often ask for it — note it can look
-    optimistic on skewed data (0.97+ is common even for weak models).
-    """
-    y_proba = model.predict_proba(X_test)[:, 1]
-    y_pred = model.predict(X_test)
-
-    logger.info("── Evaluation ───────────────────────────────")
-    logger.info("AUC-PR  (primary)  : %.4f", average_precision_score(y_test, y_proba))
-    logger.info("AUC-ROC (secondary): %.4f", roc_auc_score(y_test, y_proba))
-    report = classification_report(y_test, y_pred, target_names=["Legit", "Fraud"])
-    logger.info("Classification report:\n%s", report)
-
-
-def save_artifacts(
-    model: lgb.LGBMClassifier,
-    feature_columns: list[str],
-) -> None:
-    """
-    Persist model and feature schema to disk.
-
-    feature_columns.json is consumed by the API at startup to validate
-    that incoming request payloads contain exactly the columns the model
-    was trained on — catches schema drift early rather than inside predict().
-    """
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    joblib.dump(model, MODEL_PATH)
-    logger.info("Model saved → %s", MODEL_PATH)
-
-    FEATURE_COLUMNS_PATH.write_text(json.dumps(feature_columns, indent=2))
-    logger.info("Feature schema saved → %s", FEATURE_COLUMNS_PATH)
-
-    # Reminder: both files are in .gitignore — don't force-add them.
-    logger.info("NOTE: model.pkl and feature_columns.json are gitignored by design.")
+def train_isolation_forest(X_train: pd.DataFrame) -> IsolationForest:
+    # contamination=0.013 matches PaySim's 1.3% fraud rate
+    iforest = IsolationForest(n_estimators=100, contamination=0.013, random_state=42, n_jobs=-1)
+    iforest.fit(X_train)
+    log.info("Isolation Forest fitted (contamination=0.013)")
+    return iforest
 
 
 def main() -> None:
-    """End-to-end training pipeline: load → split → train → evaluate → save."""
-    df = load_data(DATA_PATH)
-    X, y = split_features_labels(df)
+    log.info("Loading %s", DATA_PATH)
+    df = engineer_features(pd.read_csv(DATA_PATH))
+
+    X = df[FEATURE_COLS].astype(float)
+    y = df["isFraud"].astype(int)
+    log.info("Rows: %d | Fraud: %d (%.3f%%)", len(df), y.sum(), y.mean() * 100)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=TEST_SIZE,
-        random_state=RANDOM_STATE,
-        stratify=y,   # preserve the 0.17% fraud rate in both splits
+        X, y, test_size=0.2, stratify=y, random_state=42
     )
-    logger.info("Split → train: %d rows | test: %d rows", len(X_train), len(X_test))
 
-    spw = compute_scale_pos_weight(y_train)
-    model = train_model(X_train, y_train, spw)
-    evaluate(model, X_test, y_test)
-    save_artifacts(model, list(X.columns))
+    log.info("Training LightGBM...")
+    lgbm_model = train_lgbm(X_train, X_test, y_train, y_test)
 
-    logger.info("Done. Next: python api/main.py")
+    log.info("Training Isolation Forest...")
+    iforest_model = train_isolation_forest(X_train)
+
+    joblib.dump(lgbm_model, MODEL_PATH)
+    log.info("Saved → %s", MODEL_PATH)
+
+    joblib.dump(iforest_model, IF_PATH)
+    log.info("Saved → %s", IF_PATH)
+
+    FEATURES_PATH.write_text(json.dumps(FEATURE_COLS))
+    log.info("Feature columns saved → %s", FEATURES_PATH)
 
 
 if __name__ == "__main__":

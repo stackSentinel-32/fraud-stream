@@ -30,11 +30,6 @@ _SAMPLE_SIZE = int(os.getenv("LOCUST_SAMPLE_SIZE", "100"))
 
 
 def _build_payload_templates() -> list[dict]:
-    """
-    Pre-load a pool of realistic payloads from PaySim at module startup.
-    Sampling at import time means each simulated user draws from this pool
-    rather than reading disk on every request.
-    """
     feature_columns: list[str] = json.loads(_FEATURE_COLUMNS_PATH.read_text())
     templates: list[dict] = []
 
@@ -44,13 +39,27 @@ def _build_payload_templates() -> list[dict]:
             for i, row in enumerate(reader):
                 if i >= _SAMPLE_SIZE:
                     break
-                payload = {col: 0.0 for col in feature_columns}
-                if "Amount" in payload:
-                    payload["Amount"] = float(row.get("amount", 0.0))
-                templates.append(payload)
+                amount   = float(row.get("amount", 0.0))
+                old_org  = float(row.get("oldbalanceOrg", 0.0))
+                new_org  = float(row.get("newbalanceOrig", 0.0))
+                old_dest = float(row.get("oldbalanceDest", 0.0))
+                new_dest = float(row.get("newbalanceDest", 0.0))
+                txn_type = row.get("type", "")
+                raw = {
+                    "amount": amount,
+                    "oldbalanceOrg": old_org, "newbalanceOrig": new_org,
+                    "balance_delta_org": new_org - old_org,
+                    "oldbalanceDest": old_dest, "newbalanceDest": new_dest,
+                    "balance_delta_dest": new_dest - old_dest,
+                    "type_CASH_IN":  1.0 if txn_type == "CASH_IN"  else 0.0,
+                    "type_CASH_OUT": 1.0 if txn_type == "CASH_OUT" else 0.0,
+                    "type_DEBIT":    1.0 if txn_type == "DEBIT"    else 0.0,
+                    "type_PAYMENT":  1.0 if txn_type == "PAYMENT"  else 0.0,
+                    "type_TRANSFER": 1.0 if txn_type == "TRANSFER" else 0.0,
+                }
+                templates.append({col: raw.get(col, 0.0) for col in feature_columns})
 
     if not templates:
-        # Synthetic fallback if paysim.csv is absent
         templates = [{col: 0.0 for col in feature_columns}]
 
     return templates

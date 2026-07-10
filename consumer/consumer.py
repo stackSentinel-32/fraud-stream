@@ -1,7 +1,8 @@
 """
 consumer/consumer.py
 
-Reads transactions from Kafka, scores them locally, writes results to Postgres.
+Reads transactions from Kafka, scores them with LightGBM + Isolation Forest,
+writes results to Postgres.
 
 Run:
     python consumer/consumer.py
@@ -12,6 +13,7 @@ import logging
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Callable
 
@@ -33,12 +35,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-KAFKA_TOPIC: str = os.getenv("KAFKA_TOPIC", "transactions")
-KAFKA_GROUP_ID: str = os.getenv("KAFKA_GROUP_ID", "fraud-consumer-group")
-MODEL_PATH: Path = Path(os.getenv("MODEL_PATH", "model/model.pkl"))
-FEATURE_COLUMNS_PATH: Path = Path(os.getenv("FEATURE_COLUMNS_PATH", "model/feature_columns.json"))
-
-API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
+KAFKA_TOPIC: str             = os.getenv("KAFKA_TOPIC", "transactions")
+KAFKA_GROUP_ID: str          = os.getenv("KAFKA_GROUP_ID", "fraud-consumer-group")
+MODEL_PATH: Path             = Path(os.getenv("MODEL_PATH", "model/model.pkl"))
+IF_PATH: Path                = Path(os.getenv("IF_MODEL_PATH", "model/isolation_forest.pkl"))
+FEATURE_COLUMNS_PATH: Path   = Path(os.getenv("FEATURE_COLUMNS_PATH", "model/feature_columns.json"))
+API_BASE_URL: str            = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 _DB_DSN: str = (
     f"host={os.getenv('POSTGRES_HOST', 'localhost')} "
@@ -48,32 +50,26 @@ _DB_DSN: str = (
     f"password={os.getenv('POSTGRES_PASSWORD', '')}"
 )
 
-# ── Model — loaded once at startup, not per message ───────────────
-_model = joblib.load(MODEL_PATH)
+_model          = joblib.load(MODEL_PATH)
+_iforest        = joblib.load(IF_PATH)
 _feature_columns: list[str] = json.loads(FEATURE_COLUMNS_PATH.read_text())
 
-# Persistent session reuses the TCP connection — eliminates ~2s per-message handshake overhead
+# Persistent session — reuses TCP connection, eliminates per-message handshake overhead
 _http_session = requests.Session()
 
 
 # ── Prediction functions ───────────────────────────────────────────
 
-def predict_local(features: dict[str, float]) -> tuple[float, bool]:
-    """Score using local model.pkl — zero network overhead, model tied to consumer process."""
+def predict_local(features: dict[str, float]) -> tuple[float, bool, bool]:
     row = [[features.get(col, 0.0) for col in _feature_columns]]
     prob = float(_model.predict_proba(row)[0][1])
-    return prob, prob >= 0.5
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if_flag = bool(_iforest.predict(row)[0] == -1)
+    return prob, prob >= 0.5, if_flag
 
 
-def predict_via_api(features: dict[str, float]) -> tuple[float, bool]:
-    """
-    Score via the FastAPI service over HTTP.
-    Tradeoff vs predict_local:
-      + Model version decoupled — update API without restarting consumer
-      + API independently scalable and health-checked
-      - Adds ~1–5ms network roundtrip per message
-      - Consumer fails if API is down (add retry/circuit-breaker in production)
-    """
+def predict_via_api(features: dict[str, float]) -> tuple[float, bool, bool]:
     resp = _http_session.post(
         f"{API_BASE_URL}/predict",
         json=features,
@@ -81,11 +77,10 @@ def predict_via_api(features: dict[str, float]) -> tuple[float, bool]:
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["fraud_probability"], data["is_fraud"]
+    return data["fraud_probability"], data["is_fraud"], data.get("isolation_forest_flag", False)
 
 
-# ── One-line swap: change predict_local → predict_via_api ─────────
-PREDICT_FN: Callable[[dict[str, float]], tuple[float, bool]] = predict_via_api
+PREDICT_FN: Callable[[dict[str, float]], tuple[float, bool, bool]] = predict_via_api
 
 
 # ── Postgres connection pool ───────────────────────────────────────
@@ -94,7 +89,6 @@ _pool: SimpleConnectionPool | None = None
 
 
 def get_pool() -> SimpleConnectionPool:
-    """Return the existing pool or create a new one (called on startup and after reconnect)."""
     global _pool
     if _pool is None:
         _pool = SimpleConnectionPool(minconn=1, maxconn=5, dsn=_DB_DSN)
@@ -107,12 +101,9 @@ def write_prediction(
     features: dict,
     fraud_prob: float,
     is_fraud: bool,
+    isolation_forest_flag: bool,
     latency_ms: float,
 ) -> None:
-    """
-    Insert one scored row. Resets the pool on OperationalError so the
-    next message triggers a fresh connection rather than dying silently.
-    """
     global _pool
     pool = get_pool()
     conn = pool.getconn()
@@ -121,10 +112,12 @@ def write_prediction(
             cur.execute(
                 """
                 INSERT INTO predictions
-                    (transaction_id, features, fraud_probability, is_fraud, latency_ms)
-                VALUES (%s, %s, %s, %s, %s)
+                    (transaction_id, features, fraud_probability, is_fraud,
+                     isolation_forest_flag, latency_ms)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (transaction_id, json.dumps(features), fraud_prob, is_fraud, latency_ms),
+                (transaction_id, json.dumps(features), fraud_prob, is_fraud,
+                 isolation_forest_flag, latency_ms),
             )
         conn.commit()
         pool.putconn(conn)
@@ -141,34 +134,32 @@ def write_prediction(
 # ── Message processing ─────────────────────────────────────────────
 
 def process_message(msg_value: dict) -> None:
-    """Validate, score, and persist a single Kafka message."""
     transaction_id: str | None = msg_value.get("transaction_id")
-    features: dict | None = msg_value.get("features")
+    features: dict | None      = msg_value.get("features")
 
     if not transaction_id or not isinstance(features, dict):
         raise ValueError(f"Missing transaction_id or features. Got keys: {list(msg_value.keys())}")
 
     t0 = time.monotonic()
-    fraud_prob, is_fraud = PREDICT_FN(features)
+    fraud_prob, is_fraud, if_flag = PREDICT_FN(features)
     latency_ms = (time.monotonic() - t0) * 1000
 
-    write_prediction(transaction_id, features, fraud_prob, is_fraud, latency_ms)
+    write_prediction(transaction_id, features, fraud_prob, is_fraud, if_flag, latency_ms)
     logger.debug(
-        "txn=%.8s | prob=%.4f | fraud=%s | %.1fms",
-        transaction_id, fraud_prob, is_fraud, latency_ms,
+        "txn=%.8s | prob=%.4f | fraud=%s | if_flag=%s | %.1fms",
+        transaction_id, fraud_prob, is_fraud, if_flag, latency_ms,
     )
 
 
 # ── Main loop ─────────────────────────────────────────────────────
 
 def run_consumer() -> None:
-    """Subscribe to Kafka and process messages indefinitely."""
     try:
         consumer = KafkaConsumer(
             KAFKA_TOPIC,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-            group_id=KAFKA_GROUP_ID,          # enables offset checkpointing
-            auto_offset_reset="earliest",     # catch up from last committed offset on restart
+            group_id=KAFKA_GROUP_ID,
+            auto_offset_reset="earliest",
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
         )
     except KafkaConnectionError as exc:

@@ -4,24 +4,6 @@ producer/producer.py
 Reads PaySim transactions row-by-row and publishes JSON messages to
 the Kafka `transactions` topic with realistic inter-message pacing.
 
-Kafka concept — Producer:
-    A Kafka producer is a client that appends records to a topic.
-    Records are durably stored by the broker (Kafka server) and can be
-    consumed independently by one or many consumers. The producer never
-    needs to know who (or how many) consumers exist.
-
-Schema note — V1-V28 vs PaySim fields:
-    The LightGBM model was trained on creditcard.csv, where V1-V28 are
-    PCA-anonymised components of undisclosed original features. PaySim
-    has raw financial fields (amount, balance deltas, etc.) with no
-    correspondence to PCA components.
-
-    Resolution: `Amount` is mapped directly; V1-V28 are set to 0.0 and
-    labelled as placeholders. In production you would either retrain on
-    PaySim features or apply the same PCA transform used on creditcard.
-    PaySim's `isFraud` label is forwarded as message metadata so the
-    dashboard can compare ground-truth against model probability.
-
 Run:
     python producer/producer.py
 """
@@ -113,34 +95,37 @@ def map_paysim_to_message(
     feature_columns: list[str],
     transaction_id: str,
 ) -> dict:
-    """
-    Build a Kafka message from a raw PaySim CSV row.
+    amount   = float(row.get("amount", 0.0))
+    old_org  = float(row.get("oldbalanceOrg", 0.0))
+    new_org  = float(row.get("newbalanceOrig", 0.0))
+    old_dest = float(row.get("oldbalanceDest", 0.0))
+    new_dest = float(row.get("newbalanceDest", 0.0))
+    txn_type = row.get("type", "")
 
-    Message structure:
-        transaction_id : str   — UUID assigned by the producer
-        features       : dict  — exactly the columns the model expects
-        meta           : dict  — PaySim fields kept for dashboard/monitoring
-
-    V1-V28 are PCA placeholders (0.0). See module docstring for why.
-    Amount is the only directly mappable financial field.
-    """
-    # Start with all model features zeroed — explicit default, not silent omission
-    features: dict[str, float] = {col: 0.0 for col in feature_columns}
-    if "Amount" in features:
-        features["Amount"] = float(row.get("amount", 0.0))
+    raw: dict[str, float] = {
+        "amount":            amount,
+        "oldbalanceOrg":     old_org,
+        "newbalanceOrig":    new_org,
+        "balance_delta_org": new_org - old_org,
+        "oldbalanceDest":    old_dest,
+        "newbalanceDest":    new_dest,
+        "balance_delta_dest": new_dest - old_dest,
+        "type_CASH_IN":  1.0 if txn_type == "CASH_IN"  else 0.0,
+        "type_CASH_OUT": 1.0 if txn_type == "CASH_OUT" else 0.0,
+        "type_DEBIT":    1.0 if txn_type == "DEBIT"    else 0.0,
+        "type_PAYMENT":  1.0 if txn_type == "PAYMENT"  else 0.0,
+        "type_TRANSFER": 1.0 if txn_type == "TRANSFER" else 0.0,
+    }
 
     return {
         "transaction_id": transaction_id,
-        "features": features,
-        # Metadata travels with the message but is NOT fed to the model.
-        # The consumer stores it in PostgreSQL for the dashboard to surface.
+        "features": {col: raw.get(col, 0.0) for col in feature_columns},
         "meta": {
-            "paysim_step": int(row.get("step", 0)),
-            "paysim_type": row.get("type", "UNKNOWN"),
-            "paysim_amount": float(row.get("amount", 0.0)),
-            "name_orig": row.get("nameOrig", ""),
-            "name_dest": row.get("nameDest", ""),
-            "ground_truth_fraud": int(row.get("isFraud", 0)),
+            "paysim_type":         txn_type,
+            "paysim_amount":       amount,
+            "name_orig":           row.get("nameOrig", ""),
+            "name_dest":           row.get("nameDest", ""),
+            "ground_truth_fraud":  int(row.get("isFraud", 0)),
         },
     }
 

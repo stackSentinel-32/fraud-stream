@@ -28,7 +28,7 @@ services:
     ports:
       - "2181:2181"
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      test: [ "CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -54,7 +54,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
     healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      test: [ "CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list" ]
       interval: 15s
       timeout: 10s
       retries: 8
@@ -74,7 +74,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -97,8 +97,7 @@ services:
         condition: service_healthy
     healthcheck:
       # urllib is in stdlib — no curl/wget required in the slim image
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -133,10 +132,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
     command: >
-      streamlit run dashboard/dashboard.py
-      --server.port 8501
-      --server.address 0.0.0.0
-      --server.headless true
+      streamlit run dashboard/dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
     depends_on:
       postgres:
         condition: service_healthy

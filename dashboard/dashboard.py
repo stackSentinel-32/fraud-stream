@@ -35,7 +35,6 @@ def _get_conn() -> psycopg2.extensions.connection:
 
 
 def query(sql: str) -> pd.DataFrame:
-    """Run a SQL query, reconnecting once if the connection has gone stale."""
     conn = _get_conn()
     try:
         return pd.read_sql(sql, conn)
@@ -58,13 +57,13 @@ tps_row = query("""
 """).iloc[0]
 
 span = float(tps_row["span_s"] or 1)
-tps = float(tps_row["cnt"]) / span if span > 0 else 0.0
+tps  = float(tps_row["cnt"]) / span if span > 0 else 0.0
 
 # ── Summary metrics (last 10 min) ────────────────────────────────
 summary = query("""
     SELECT
-        COUNT(*)                                                      AS total,
         SUM(is_fraud::int)                                            AS fraud_count,
+        SUM(isolation_forest_flag::int)                               AS if_anomalies,
         ROUND(AVG(is_fraud::int) * 100, 2)                           AS fraud_pct,
         PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY latency_ms)     AS p50,
         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)     AS p95,
@@ -73,21 +72,23 @@ summary = query("""
     WHERE created_at >= NOW() - INTERVAL '10 minutes'
 """).iloc[0]
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("TPS (60 s)", f"{tps:.2f}")
-c2.metric("Fraud rate (10 m)", f"{summary['fraud_pct']:.2f}%")
-c3.metric("p50 latency", f"{summary['p50']:.1f} ms")
-c4.metric("p95 latency", f"{summary['p95']:.1f} ms")
-c5.metric("p99 latency", f"{summary['p99']:.1f} ms")
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1.metric("TPS (60 s)",           f"{tps:.2f}")
+c2.metric("LightGBM fraud (10 m)", f"{summary['fraud_pct']:.2f}%")
+c3.metric("IF anomalies (10 m)",  f"{int(summary['if_anomalies'] or 0)}")
+c4.metric("p50 latency",          f"{summary['p50']:.1f} ms")
+c5.metric("p95 latency",          f"{summary['p95']:.1f} ms")
+c6.metric("p99 latency",          f"{summary['p99']:.1f} ms")
 
 st.divider()
 
 # ── Fraud rate over time ───────────────────────────────────────────
 fraud_ts = query("""
     SELECT
-        date_trunc('minute', created_at)     AS minute,
-        ROUND(AVG(is_fraud::int) * 100, 2)  AS fraud_pct,
-        COUNT(*)                             AS volume
+        date_trunc('minute', created_at)          AS minute,
+        ROUND(AVG(is_fraud::int) * 100, 2)        AS fraud_pct,
+        ROUND(AVG(isolation_forest_flag::int) * 100, 2) AS if_pct,
+        COUNT(*)                                  AS volume
     FROM predictions
     WHERE created_at >= NOW() - INTERVAL '30 minutes'
     GROUP BY 1
@@ -97,11 +98,11 @@ fraud_ts = query("""
 col_left, col_right = st.columns(2)
 
 with col_left:
-    st.subheader("Fraud rate % (30 min)")
+    st.subheader("Fraud rate % — LightGBM vs Isolation Forest (30 min)")
     if fraud_ts.empty:
         st.info("No data yet.")
     else:
-        st.line_chart(fraud_ts.set_index("minute")["fraud_pct"])
+        st.line_chart(fraud_ts.set_index("minute")[["fraud_pct", "if_pct"]])
 
 with col_right:
     st.subheader("Transaction volume (30 min)")
@@ -110,20 +111,19 @@ with col_right:
 
 st.divider()
 
-# ── Feature drift — KS test on Amount ────────────────────────────
-# KS test chosen because Amount is right-skewed; t-test assumes normality.
-# ks_2samp compares the full CDF shape with no distributional assumptions.
-# p < 0.05 → the two hourly distributions differ significantly → flag drift.
-st.subheader("Feature drift — Amount distribution (KS test, 1-hour windows)")
+# ── Feature drift — KS test on amount ────────────────────────────
+# KS test: no normality assumption, compares full CDF shape.
+# p < 0.05 → distributions differ significantly → flag drift.
+st.subheader("Feature drift — amount distribution (KS test, 1-hour windows)")
 
 drift_df = query("""
     SELECT
         CASE WHEN created_at >= NOW() - INTERVAL '1 hour'
              THEN 'recent_1h' ELSE 'previous_1h' END AS window,
-        (features->>'Amount')::float                  AS amount
+        (features->>'amount')::float                  AS amount
     FROM predictions
     WHERE created_at >= NOW() - INTERVAL '2 hours'
-      AND features->>'Amount' IS NOT NULL
+      AND features->>'amount' IS NOT NULL
 """)
 
 if drift_df.empty or drift_df["window"].nunique() < 2:
@@ -136,8 +136,8 @@ else:
 
     d1, d2, d3 = st.columns(3)
     d1.metric("KS statistic", f"{ks_stat:.4f}", help="0 = identical distributions, 1 = completely different")
-    d2.metric("p-value", f"{p_val:.4f}", help="< 0.05 signals a statistically significant shift")
-    d3.metric("Samples", f"{len(recent)} / {len(previous)}", help="recent / previous window")
+    d2.metric("p-value",      f"{p_val:.4f}",   help="< 0.05 signals a statistically significant shift")
+    d3.metric("Samples",      f"{len(recent)} / {len(previous)}", help="recent / previous window")
 
     if p_val < 0.05:
         st.warning(f"⚠️ Drift detected (p={p_val:.4f}). Amount distribution shifted between windows.")
