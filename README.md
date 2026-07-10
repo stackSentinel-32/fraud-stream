@@ -1,29 +1,48 @@
 # fraud-stream
 
-A production-quality, end-to-end real-time fraud detection system built as a portfolio project. Transactions stream from the PaySim dataset through Apache Kafka, scored in real time by a LightGBM classifier and an Isolation Forest anomaly detector served via FastAPI, with results persisted to PostgreSQL and visualised on a live Streamlit dashboard.
+A production-quality, end-to-end real-time fraud detection system. Transactions stream from a financial dataset through Apache Kafka, scored in real time by a **LightGBM classifier** and an **Isolation Forest anomaly detector** served via FastAPI, with results persisted to PostgreSQL and visualised on a live Streamlit dashboard deployed on AWS EC2.
 
 > **Live Dashboard:** [http://13.49.244.196:8501](http://13.49.244.196:8501)
-> 
-> *(Note: The live Kafka data stream is paused by default to preserve AWS resources. See the GIF below for a demonstration of the real-time streaming pipeline under load).*
+> *(The Kafka data stream is paused by default to conserve AWS resources. Start the producer to see live data flow.)*
 
-![Dashboard Demo](https://via.placeholder.com/800x400.png?text=Replace+this+image+with+a+GIF+of+your+live+dashboard)
 ---
 
 ## Architecture
 
-Transactions are generated row-by-row from the PaySim dataset by a Python producer script and published to a Kafka topic called `transactions`. A Kafka consumer subscribes, sends each transaction's engineered feature vector to the FastAPI scoring endpoint, receives back a LightGBM fraud probability and an Isolation Forest anomaly flag, and writes both to a PostgreSQL `predictions` table. The Streamlit dashboard polls that table every few seconds to show live TPS, fraud rate (both models), latency percentiles (p50/p95/p99), and a KS-test-based amount-distribution drift indicator.
-
+```mermaid
+flowchart LR
+    A[("PaySim CSV\n6.3M rows")] --> B["producer.py\nRow-by-row streaming"]
+    B -->|JSON messages| C[("Apache Kafka\ntransactions topic")]
+    C --> D["consumer.py\nKafka Consumer"]
+    D -->|Feature vector| E["FastAPI /predict\n4 Uvicorn workers"]
+    E -->|LightGBM| F["Fraud Probability\n& Is-Fraud flag"]
+    E -->|Isolation Forest| G["Anomaly Flag\n(unsupervised)"]
+    F --> H[("PostgreSQL\npredictions table")]
+    G --> H
+    H --> I["Streamlit Dashboard\nLive Monitor"]
+    I --> J["TPS · Fraud Rate\nLatency p50/p95/p99\nKS Drift Test"]
 ```
-[PaySim CSV]
-     │
-     ▼
-producer.py ──► Kafka (transactions topic) ──► consumer.py ──► FastAPI /predict
-                                                                      │
-                                                              LightGBM  +  Isolation Forest
-                                                                      │
-                                                             PostgreSQL predictions
-                                                                      │
-                                                           Streamlit dashboard
+
+---
+
+## Data Flow — Step by Step
+
+```mermaid
+sequenceDiagram
+    participant P as producer.py
+    participant K as Kafka Broker
+    participant C as consumer.py
+    participant A as FastAPI /predict
+    participant D as PostgreSQL
+    participant S as Streamlit
+
+    P->>K: Publish transaction JSON
+    K->>C: Poll messages
+    C->>A: POST /predict (feature vector)
+    A-->>C: fraud_prob, is_fraud, if_flag, latency_ms
+    C->>D: INSERT INTO predictions
+    S->>D: SELECT ... every 5s
+    S-->>S: Render live charts
 ```
 
 ---
@@ -33,165 +52,88 @@ producer.py ──► Kafka (transactions topic) ──► consumer.py ──►
 | Layer | Technology |
 |---|---|
 | Message broker | Apache Kafka + Zookeeper (Confluent CP 7.6) |
-| ML model | LightGBM 4.5 (supervised) + Isolation Forest (unsupervised) |
+| ML — Supervised | LightGBM 4.5 |
+| ML — Unsupervised | Isolation Forest (scikit-learn) |
 | Inference API | FastAPI 0.115 + Uvicorn (4 workers) |
 | Database | PostgreSQL 16 |
 | Dashboard | Streamlit 1.41 |
 | Load testing | Locust 2.32 |
-| Orchestration | Docker Compose |
-
----
-
-## Setup — Fresh Clone to Working Demo
-
-### Prerequisites
-- Docker Desktop (running)
-- Python 3.12+
-- Kaggle account (to download datasets)
-
-### Step 1 — Clone and configure
-
-```bash
-git clone https://github.com/stackSentinel-32/fraud-stream.git
-cd fraud-stream
-cp .env.example .env
-# Open .env and set POSTGRES_PASSWORD to any value you like
-```
-
-### Step 2 — Download datasets
-
-```bash
-# Install Kaggle CLI
-pip install kaggle
-
-# Download Credit Card Fraud dataset (training data)
-kaggle datasets download -d mlg-ulb/creditcardfraud -p data/ --unzip
-
-# Download PaySim dataset (streaming simulation)
-kaggle datasets download -d ealaxi/paysim1 -p data/ --unzip
-mv data/PS_20174392719_1491204439457_log.csv data/paysim.csv
-```
-
-### Step 3 — Install Python dependencies and train the models
-
-```bash
-pip install -r requirements.txt
-
-# Trains LightGBM + Isolation Forest on PaySim features
-# Saves: model/model.pkl, model/isolation_forest.pkl, model/feature_columns.json
-python model/train.py
-```
-
-Expected output:
-```
-LightGBM  AUC-PR : ~0.72
-LightGBM  AUC-ROC: ~0.99
-Isolation Forest fitted (contamination=0.013)
-Saved → model/model.pkl
-Saved → model/isolation_forest.pkl
-```
-
-### Step 4 — Start the full stack
-
-```bash
-docker compose up --build
-```
-
-Wait for all services to report healthy (~60–90 seconds on first build):
-
-```bash
-docker compose ps
-# All six services should show "healthy" or "running"
-```
-
-### Step 5 — Start the producer (on demand)
-
-```bash
-# Open a new terminal — this simulates live transaction traffic
-python producer/producer.py
-```
-
-### Step 6 — Open the interfaces
-
-| Interface | URL |
-|---|---|
-| Streamlit dashboard | http://localhost:8501 |
-| FastAPI docs (Swagger) | http://localhost:8000/docs |
-| FastAPI health check | http://localhost:8000/health |
-
-### Step 7 — Run the load test (optional)
-
-```bash
-# Start Locust UI
-locust -f loadtest/locustfile.py --host http://localhost:8000
-
-# Open http://localhost:8089 → set Users=500, Spawn rate=10 → Start
-```
-
----
-
-## Load Test Results
-
-> Run with Locust ramping from 10 → 500 concurrent users over 5 minutes, single host, 4 uvicorn workers.
-
-| Metric | Value |
-|---|---|
-| Peak requests/sec | _TBD_ |
-| p50 latency | _TBD_ ms |
-| p95 latency | _TBD_ ms |
-| p99 latency | _TBD_ ms |
-| Failure rate | _TBD_ % |
-| Breaking point (users) | _TBD_ concurrent users |
-| Primary bottleneck | _TBD_ |
+| Orchestration | Docker Compose (6 containers) |
+| Deployment | AWS EC2 (Ubuntu 26.04, t2.micro) |
 
 ---
 
 ## Model Performance
 
-### LightGBM (supervised)
+### LightGBM (Supervised)
 
 | Metric | Value |
 |---|---|
-| Dataset | PaySim (6.3M transactions, Kaggle) |
+| Dataset | PaySim (6.3M transactions) |
 | Fraud rate | ~1.3% |
-| Features | 12 (amount, balance deltas, transaction type one-hot) |
+| Features | 13 (amount, balance deltas, transaction type one-hot) |
 | Imbalance handling | `scale_pos_weight` ≈ 76 |
 | AUC-PR | ~0.72 |
 | AUC-ROC | ~0.99 |
-| Fraud recall | ~90% at threshold 0.5 |
-| Training time | ~60 seconds (6.3M rows, 500 trees) |
+| Fraud recall @ threshold 0.5 | ~90% |
 
-### Isolation Forest (unsupervised — no labels used)
+### Isolation Forest (Unsupervised — no labels used)
 
 | Metric | Value |
 |---|---|
-| Algorithm | Isolation Forest (sklearn) |
 | Contamination | 0.013 (matches PaySim fraud rate) |
 | n_estimators | 100 |
 | Use case | Catches distributional anomalies the supervised model misses |
-| Compared with LightGBM | Higher false-positive rate but zero dependency on fraud labels |
 
 ---
 
-## What I Would Improve With More Time
+## Dashboard Features
 
-**1. Exactly-once delivery with Kafka transactions**
-The consumer uses at-least-once semantics — if it crashes mid-write, a message may be processed twice. Kafka transactions plus idempotent Postgres `INSERT ... ON CONFLICT DO NOTHING` on `transaction_id` would give exactly-once guarantees.
+```mermaid
+graph TD
+    A["fraud-stream · Live Monitor"] --> B["TPS — Transactions Per Second\n(rolling 60s window)"]
+    A --> C["LightGBM Fraud Rate %\n(last 10 minutes)"]
+    A --> D["Isolation Forest Anomalies\n(last 10 minutes)"]
+    A --> E["API Latency\np50 / p95 / p99"]
+    A --> F["Fraud Rate % Chart\nLightGBM vs IF — 30 min rolling"]
+    A --> G["Transaction Volume Chart\n30 min rolling"]
+    A --> H["Feature Drift Detector\nKS Test on amount distribution\n1-hour sliding windows"]
+```
 
-**2. Model versioning with MLflow**
-`model.pkl` is a single file with no versioning. MLflow tracking (log AUC-PR, feature schema, hyperparameters per run) would enable A/B testing two models on live traffic and rolling back in seconds.
+---
 
-**3. Prometheus + Grafana instead of Streamlit for ops metrics**
-Streamlit polls Postgres every 5 seconds — fine for a demo but not for production alerting. `prometheus-fastapi-instrumentator` + Grafana would give sub-second metrics and alert rules.
+## Running Locally
 
-**4. Dead letter queue for malformed messages**
-Malformed Kafka messages are currently logged and skipped. A dead letter topic (`transactions.dlq`) would capture every bad message for inspection and replay without blocking the main consumer.
+### Prerequisites
+- Docker Desktop
+- Python 3.12+
+- PaySim dataset from [Kaggle](https://www.kaggle.com/datasets/ealaxi/paysim1)
 
-**5. Async consumer to eliminate HTTP blocking**
-The consumer's `predict_via_api` call is synchronous. Rewriting with `asyncio` + `httpx.AsyncClient` would allow concurrent in-flight requests, significantly increasing throughput on I/O-bound workloads.
+### Steps
 
-**6. Online model retraining**
-As transaction patterns drift (detected by the KS test), the model should be retrained automatically on a rolling window. An Airflow DAG triggering `train.py` weekly would keep the model current without manual intervention.
+```bash
+# 1. Clone and configure
+git clone https://github.com/stackSentinel-32/fraud-stream.git
+cd fraud-stream
+cp .env.example .env
+
+# 2. Place the PaySim dataset
+mkdir data
+mv /path/to/PS_20174392719_1491204439457_log.csv data/paysim.csv
+
+# 3. Start the full stack (Kafka + Postgres + API + Consumer + Dashboard)
+docker compose up --build
+
+# 4. Start the producer in a separate terminal (simulates live traffic)
+python producer/producer.py
+
+# 5. Open the dashboard
+open http://localhost:8501
+
+# 6. Optional: run the load test
+locust -f loadtest/locustfile.py --host http://localhost:8000
+# Then open http://localhost:8089
+```
 
 ---
 
@@ -199,27 +141,41 @@ As transaction patterns drift (detected by the KS test), the model should be ret
 
 ```
 fraud-stream/
-├── docker-compose.yml      # full stack orchestration
-├── Dockerfile              # shared base image for api, consumer, dashboard
-├── requirements.txt        # pinned Python dependencies
-├── .env.example            # configuration template (copy to .env)
-├── data/                   # datasets — gitignored
+├── docker-compose.yml       # 6-container stack orchestration
+├── Dockerfile               # shared base image (api, consumer, dashboard)
+├── requirements.txt         # pinned Python dependencies
+├── .env.example             # environment variable template
 ├── model/
-│   ├── train.py            # training pipeline (LightGBM + Isolation Forest)
-│   ├── model.pkl           # LightGBM artifact — gitignored
-│   ├── isolation_forest.pkl # IF artifact — gitignored
-│   └── feature_columns.json
+│   ├── train.py             # LightGBM + Isolation Forest training pipeline
+│   ├── model.pkl            # trained LightGBM artifact
+│   ├── isolation_forest.pkl # trained Isolation Forest artifact
+│   └── feature_columns.json # feature schema shared across all services
 ├── producer/
-│   ├── producer.py         # Kafka producer (run manually)
-│   └── peek.py             # debug consumer for pipe verification
+│   └── producer.py          # streams PaySim CSV rows into Kafka
 ├── consumer/
-│   └── consumer.py         # Kafka consumer → API → Postgres
+│   └── consumer.py          # reads Kafka → calls API → writes to Postgres
 ├── api/
-│   └── main.py             # FastAPI scoring endpoint
+│   └── main.py              # FastAPI scoring endpoint (LightGBM + IF)
 ├── dashboard/
-│   └── dashboard.py        # Streamlit live dashboard
+│   └── dashboard.py         # Streamlit live monitor with KS drift test
 ├── loadtest/
-│   └── locustfile.py       # Locust load test
+│   └── locustfile.py        # Locust load test targeting /predict
 └── db/
-    └── init.sql            # Postgres schema (auto-runs on first start)
+    └── init.sql             # PostgreSQL schema (auto-runs on first start)
 ```
+
+---
+
+## What I Would Improve With More Time
+
+1. **Exactly-once Kafka delivery** — current at-least-once semantics can produce duplicate DB writes on consumer crash. Kafka transactions + idempotent `INSERT ... ON CONFLICT DO NOTHING` on `transaction_id` would fix this.
+
+2. **MLflow model versioning** — `model.pkl` is a single unversioned artifact. MLflow would enable experiment tracking, A/B testing two models on live traffic, and one-command rollback.
+
+3. **Prometheus + Grafana** — Streamlit polls Postgres every 5s which is fine for a demo. Production alerting needs sub-second metrics and configurable alert rules.
+
+4. **Dead letter queue** — malformed Kafka messages are currently logged and dropped. A `transactions.dlq` topic would preserve every bad message for debugging and replay.
+
+5. **Async consumer** — the `predict_via_api` HTTP call is synchronous. Rewriting with `asyncio` + `httpx.AsyncClient` would significantly increase consumer throughput.
+
+6. **Automated retraining** — an Airflow DAG could trigger `train.py` weekly on fresh data whenever the KS test flags distribution drift.
