@@ -5,7 +5,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import psycopg2
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from scipy import stats
 
@@ -562,18 +561,12 @@ else:
         }
     )
 
-components.html(
-    f"""
-    <script>
-        (function() {{
-            var rate = {current_refresh_rate};
-            if (rate > 0) {{
-                setTimeout(function() {{
-                    window.parent.location.reload();
-                }}, rate * 1000);
-            }}
-        }})();
-    </script>
-    """,
-    height=0,
-)
+# ── Auto-refresh via st.fragment (no sleep, no UI glitches) ────────
+if current_refresh_rate > 0:
+    from datetime import timedelta
+
+    @st.fragment(run_every=timedelta(seconds=current_refresh_rate))
+    def _auto_refresh():
+        st.rerun()
+
+    _auto_refresh()
