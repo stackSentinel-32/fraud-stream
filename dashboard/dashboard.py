@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import psycopg2
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from dotenv import load_dotenv
 from scipy import stats
 
@@ -204,20 +205,19 @@ def query(sql: str) -> pd.DataFrame:
 
 
 try:
-    saved_rate = int(st.query_params.get("refresh", "5"))
+    saved_rate = int(st.query_params.get("refresh", "10"))
 except ValueError:
-    saved_rate = 5
+    saved_rate = 10
 
-# ── Header ─────────────────────────────────────────────────────────────────
+# ── Header ───────────────────────────────────────────────────────────
 title_col, ts_col = st.columns([3, 1])
 with title_col:
     st.title("🛡️ fraud-stream · Live Monitor")
 with ts_col:
-    refresh_label = "Paused" if saved_rate == 0 else f"{saved_rate}s"
     st.markdown(
         f"<div style='text-align:right; color:#475569; font-size:0.8rem; padding-top:1.5rem;'>"
         f"🔴 LIVE &nbsp;·&nbsp; Updated {datetime.now().strftime('%H:%M:%S')}<br>"
-        f"Auto-refreshes every {refresh_label}</div>",
+        f"Auto-refreshes every 10s</div>",
         unsafe_allow_html=True
     )
 
@@ -288,7 +288,7 @@ c6.metric(
 
 st.divider()
 
-res_col, win_col, theme_col, refresh_col = st.columns([1, 1, 1, 1])
+res_col, win_col, theme_col = st.columns([1, 1, 1])
 with res_col:
     res_options = ["5 sec", "10 sec", "30 sec", "1 min", "5 min", "10 min", "30 min"]
     saved_res = st.query_params.get("res", "1 min")
@@ -322,26 +322,6 @@ with theme_col:
     )
     if selected_theme != saved_theme:
         st.query_params["theme"] = selected_theme
-        st.rerun()
-with refresh_col:
-    refresh_options = {
-        "Off (Paused)": 0,
-        "5 seconds": 5,
-        "10 seconds": 10,
-        "30 seconds": 30,
-        "1 minute": 60,
-    }
-    refresh_by_seconds = {v: k for k, v in refresh_options.items()}
-    saved_label = refresh_by_seconds.get(saved_rate, "5 seconds")
-    saved_idx = list(refresh_options.keys()).index(saved_label)
-    selected_refresh = st.selectbox(
-        "Auto Refresh Rate",
-        options=list(refresh_options.keys()),
-        index=saved_idx,
-    )
-    current_refresh_rate = refresh_options[selected_refresh]
-    if current_refresh_rate != saved_rate:
-        st.query_params["refresh"] = str(current_refresh_rate)
         st.rerun()
 
 ALLOWED_RES_SECONDS = {
@@ -561,12 +541,5 @@ else:
         }
     )
 
-# ── Auto-refresh via st.fragment (no sleep, no UI glitches) ────────
-if current_refresh_rate > 0:
-    from datetime import timedelta
-
-    @st.fragment(run_every=timedelta(seconds=current_refresh_rate))
-    def _auto_refresh():
-        st.rerun()
-
-    _auto_refresh()
+# ── Auto-refresh every 10 s via soft-rerun (no page reload, instant) ─
+st_autorefresh(interval=10_000, key="dashboard_refresh")

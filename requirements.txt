@@ -16,6 +16,7 @@ psycopg2-binary==2.9.10     # binary build → no pg_config needed at install ti
 # ── Dashboard ─────────────────────────────────────────────────────
 streamlit==1.41.0
 plotly==5.24.1
+streamlit-autorefresh==1.0.1
 
 # ── Load testing ──────────────────────────────────────────────────
 locust==2.32.4
