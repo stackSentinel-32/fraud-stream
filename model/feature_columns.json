@@ -1,1 +1,1 @@
-["amount", "oldbalanceOrg", "newbalanceOrig", "balance_delta_org", "oldbalanceDest", "newbalanceDest", "balance_delta_dest", "type_CASH_IN", "type_CASH_OUT", "type_DEBIT", "type_PAYMENT", "type_TRANSFER", "velocity_10m"]
+["amount", "oldbalanceOrg", "newbalanceOrig", "balance_delta_org", "oldbalanceDest", "newbalanceDest", "balance_delta_dest", "type_CASH_IN", "type_CASH_OUT", "type_DEBIT", "type_PAYMENT", "type_TRANSFER"]
