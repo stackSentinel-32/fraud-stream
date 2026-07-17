@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import psycopg2
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from scipy import stats
 
@@ -561,19 +562,18 @@ else:
         }
     )
 
-st.markdown(f"""
-<script>
-    (function() {{
-        if (window._refreshTimer) {{
-            clearTimeout(window._refreshTimer);
-            window._refreshTimer = null;
-        }}
-        var rate = {current_refresh_rate};
-        if (rate > 0) {{
-            window._refreshTimer = setTimeout(function() {{
-                window.location.reload();
-            }}, rate * 1000);
-        }}
-    }})();
-</script>
-""", unsafe_allow_html=True)
+components.html(
+    f"""
+    <script>
+        (function() {{
+            var rate = {current_refresh_rate};
+            if (rate > 0) {{
+                setTimeout(function() {{
+                    window.parent.location.reload();
+                }}, rate * 1000);
+            }}
+        }})();
+    </script>
+    """,
+    height=0,
+)
