@@ -106,6 +106,11 @@ The dashboard interprets the combined output of both ML models into plain-Englis
 - **Guaranteed Scam (Red):** The transaction matches known historical fraud patterns (LightGBM) **AND** looks like a statistically bizarre outlier (Isolation Forest).
 - **Stealthy Fraud (Orange):** The transaction matches known fraud patterns (LightGBM), but blends in with normal behavior mathematically (no Isolation Forest anomaly).
 
+### Engineering Highlights
+- **Ensemble Model Inference:** Synthesizes supervised learning (LightGBM) and unsupervised anomaly detection (Isolation Forest) to build a robust, multi-layered defense mechanism.
+- **Robust UI State Management:** Employs URL parameter synchronization and custom JavaScript rendering to ensure dashboard configurations persist flawlessly during real-time streaming. Includes precision controls for **Auto-Refresh Rates** (5s to 1m), **Time Windows** (10m to 3h), and **Chart Resolutions** (5s to 30m).
+- **Dynamic Theming Engine:** Integrated Plotly and CSS styling that seamlessly transitions between Dark, Light, and Eye-Protection modes dynamically without reloading the data layer.
+
 ---
 
 ## Running Locally
