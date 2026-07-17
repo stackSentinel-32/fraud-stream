@@ -100,6 +100,12 @@ graph TD
     A --> H["Feature Drift Detector\nKS Test on amount distribution\n1-hour sliding windows"]
 ```
 
+### Fraud Classification System
+
+The dashboard interprets the combined output of both ML models into plain-English classifications for easy monitoring:
+- **Guaranteed Scam (Red):** The transaction matches known historical fraud patterns (LightGBM) **AND** looks like a statistically bizarre outlier (Isolation Forest).
+- **Stealthy Fraud (Orange):** The transaction matches known fraud patterns (LightGBM), but blends in with normal behavior mathematically (no Isolation Forest anomaly).
+
 ---
 
 ## Running Locally
